@@ -8,7 +8,7 @@ namespace UnityStandardAssets._2D
     public class Bullet : LiteNetLibBehaviour
     {
         public PlatformerCharacter2D shooter;
-        public sbyte shootDirection;
+        public SyncFieldSByte shootDirection;
         public int damage = 5;
         public float speed = 4;
         public float lifeTime = 2;

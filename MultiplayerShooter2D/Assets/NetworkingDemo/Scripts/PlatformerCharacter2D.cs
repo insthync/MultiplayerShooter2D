@@ -109,7 +109,7 @@ namespace UnityStandardAssets._2D
             // Spawn bullet at server
             Bullet bullet = Instantiate(bulletPrefab, bulletTransform.position, Quaternion.identity);
             bullet.shooter = this;
-            bullet.shootDirection = (sbyte)(transform.localScale.x / Mathf.Abs(transform.localScale.x));
+            bullet.shootDirection.Value = (sbyte)(transform.localScale.x / Mathf.Abs(transform.localScale.x));
             Manager.Assets.NetworkSpawn(bullet.gameObject);
         }
 
