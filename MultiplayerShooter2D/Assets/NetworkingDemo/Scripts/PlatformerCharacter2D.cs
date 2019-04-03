@@ -1,9 +1,12 @@
-using System;
+using System.Collections;
 using UnityEngine;
+using UnityEngine.UI;
+using LiteNetLib;
+using LiteNetLibManager;
 
 namespace UnityStandardAssets._2D
 {
-    public class PlatformerCharacter2D : MonoBehaviour
+    public class PlatformerCharacter2D : LiteNetLibBehaviour
     {
         [SerializeField] private float m_MaxSpeed = 10f;                    // The fastest the player can travel in the x axis.
         [SerializeField] private float m_JumpForce = 400f;                  // Amount of force added when the player jumps.
@@ -20,6 +23,16 @@ namespace UnityStandardAssets._2D
         private Rigidbody2D m_Rigidbody2D;
         private bool m_FacingRight = true;  // For determining which way the player is currently facing.
 
+        // These are adding fields for networking demo
+        public SpriteRenderer characterSpriteRenderer;
+        public Image hpFillImage;
+        public Transform bulletTransform;
+
+        [Header("Networking Parameters")]
+        public SyncFieldInt hp;
+        [Tooltip("This bullet prefab also have to set to LiteNetLibAssets")]
+        public Bullet bulletPrefab;
+        
         private void Awake()
         {
             // Setting up references.
@@ -29,9 +42,91 @@ namespace UnityStandardAssets._2D
             m_Rigidbody2D = GetComponent<Rigidbody2D>();
         }
 
+        private void Start()
+        {
+            // Set initial hp at server
+            if (IsServer)
+                hp.Value = 100;
+        }
+
+        private void Update()
+        {
+            hpFillImage.fillAmount = (float)hp.Value / 100f;
+            characterSpriteRenderer.enabled = hp.Value > 0; // If dead, disable sprite renderer
+        }
+
+        public override void OnSetup()
+        {
+            base.OnSetup();
+            // Use this function to setup network functions
+            RegisterNetFunction<float, bool, sbyte>(NetFuncSendMovementToServer);
+            RegisterNetFunction(NetFuncShoot);
+            hp.onChange = (isInit, amount) =>
+            {
+                // Respawning at server
+                if (IsServer)
+                    StartCoroutine(RespawnRoutine());
+            };
+        }
+
+        IEnumerator RespawnRoutine()
+        {
+            // Respawn in 3 secs
+            yield return new WaitForSeconds(3f);
+            if (hp.Value <= 0)
+            {
+                GetComponent<LiteNetLibTransform>().Teleport(Manager.Assets.GetPlayerSpawnPosition(), Quaternion.identity);
+                hp.Value = 100;
+            }
+        }
+
+        /// <summary>
+        /// This function will be called by owning client to server to send movement states
+        /// Then server will sync states to other clients
+        /// </summary>
+        /// <param name="speed"></param>
+        /// <param name="crouch"></param>
+        /// <param name="scaleX"></param>
+        private void NetFuncSendMovementToServer(float speed, bool crouch, sbyte scaleX)
+        {
+            if (IsOwnerClient)
+            {
+                // Data alerady set at client don't set it again
+                return;
+            }
+            m_Anim.SetFloat("Speed", speed);
+            m_Anim.SetBool("Crouch", crouch);
+            Vector3 theScale = transform.localScale;
+            theScale.x = Mathf.Abs(theScale.x) * scaleX;
+            transform.localScale = theScale;
+        }
+
+        /// <summary>
+        /// This function will be called by owning client to server to shoot
+        /// </summary>
+        private void NetFuncShoot()
+        {
+            // Spawn bullet at server
+            Bullet bullet = Instantiate(bulletPrefab, bulletTransform.position, Quaternion.identity);
+            bullet.shooter = this;
+            bullet.shootDirection = (sbyte)(transform.localScale.x / Mathf.Abs(transform.localScale.x));
+            Manager.Assets.NetworkSpawn(bullet.gameObject);
+        }
+
+        /// <summary>
+        /// Use this to shoot, this function should be called by owning client only
+        /// </summary>
+        public void Shoot()
+        {
+            CallNetFunction(NetFuncShoot, FunctionReceivers.Server);
+        }
 
         private void FixedUpdate()
         {
+            // Avoid ground check while dead
+            if (hp.Value <= 0)
+                return;
+
             m_Grounded = false;
 
             // The player is grounded if a circlecast to the groundcheck position hits anything designated as ground
@@ -48,9 +143,18 @@ namespace UnityStandardAssets._2D
             m_Anim.SetFloat("vSpeed", m_Rigidbody2D.velocity.y);
         }
 
-
+        /// <summary>
+        /// Use this to move character, this function should be called by owning client only
+        /// </summary>
+        /// <param name="move"></param>
+        /// <param name="crouch"></param>
+        /// <param name="jump"></param>
         public void Move(float move, bool crouch, bool jump)
         {
+            // Avoid move while dead
+            if (hp.Value <= 0)
+                return;
+
             // If crouching, check to see if the character can stand up
             if (!crouch && m_Anim.GetBool("Crouch"))
             {
@@ -68,13 +172,13 @@ namespace UnityStandardAssets._2D
             if (m_Grounded || m_AirControl)
             {
                 // Reduce the speed if crouching by the crouchSpeed multiplier
-                move = (crouch ? move*m_CrouchSpeed : move);
+                move = (crouch ? move * m_CrouchSpeed : move);
 
                 // The Speed animator parameter is set to the absolute value of the horizontal input.
                 m_Anim.SetFloat("Speed", Mathf.Abs(move));
 
                 // Move the character
-                m_Rigidbody2D.velocity = new Vector2(move*m_MaxSpeed, m_Rigidbody2D.velocity.y);
+                m_Rigidbody2D.velocity = new Vector2(move * m_MaxSpeed, m_Rigidbody2D.velocity.y);
 
                 // If the input is moving the player right and the player is facing left...
                 if (move > 0 && !m_FacingRight)
@@ -82,7 +186,7 @@ namespace UnityStandardAssets._2D
                     // ... flip the player.
                     Flip();
                 }
-                    // Otherwise if the input is moving the player left and the player is facing right...
+                // Otherwise if the input is moving the player left and the player is facing right...
                 else if (move < 0 && m_FacingRight)
                 {
                     // ... flip the player.
@@ -97,6 +201,17 @@ namespace UnityStandardAssets._2D
                 m_Anim.SetBool("Ground", false);
                 m_Rigidbody2D.AddForce(new Vector2(0f, m_JumpForce));
             }
+
+            float speed = m_Anim.GetFloat("Speed");
+            bool isCrouch = m_Anim.GetBool("Crouch");
+            sbyte scaleX = (sbyte)(transform.localScale.x / Mathf.Abs(transform.localScale.x));
+            CallNetFunction(
+                NetFuncSendMovementToServer,
+                DeliveryMethod.Sequenced,
+                FunctionReceivers.All, /* Target is all, so it will send function call to server then server will pass it to all other clients */
+                speed,
+                isCrouch,
+                scaleX /* Get 1 or -1 value */);
         }
 
 
